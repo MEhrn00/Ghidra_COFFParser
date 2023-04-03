@@ -10,9 +10,10 @@ import struct
 from ghidra.program.model.data import (
     ArrayDataType,
     CategoryPath,
+    CharDataType,
     DataTypeConflictHandler,
     ShortDataType,
-    SignedCharDataType,
+    ShortDataType,
     StructureDataType,
     TerminatedStringDataType,
     UnionDataType,
@@ -44,6 +45,9 @@ Address = (
 
 # Type definition for the COFF file header
 COFF_HEADER_TYPE = StructureDataType(CategoryPath("/COFFDefs"), "COFFHeader", 0)
+
+# Type definition for the COFF file header
+COFF_OPTIONAL_HEADER_TYPE = StructureDataType(CategoryPath("/COFFDefs"), "COFFOptionalHeader", 0)
 
 # Type definition for the COFF section header
 COFF_SECTION_HEADER_TYPE = StructureDataType(
@@ -163,6 +167,77 @@ def add_coff_types(tm):
     coff_types.append(COFF_HEADER_TYPE)
 
     """
+    /* sizeof == 28 */
+    struct COFFOptionalHeader {
+        int16_t  magic;          /* Magic Number                    */
+        int16_t  vstamp;         /* Version stamp                   */
+        uint32_t tsize;          /* Text size in bytes              */
+        uint32_t dsize;          /* Initialised data size           */
+        uint32_t bsize;          /* Uninitialised data size         */
+        uint32_t entry;          /* Entry point                     */
+        uint32_t text_start;     /* Base of Text used for this file */
+        uint32_t data_start;     /* Base of Data used for this file */
+    };
+    """
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        ShortDataType,  # Member type
+        "magic",  # Member name
+        "Magic Number",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        ShortDataType,  # Member type
+        "vstamp",  # Member name
+        "Version stamp",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "tsize",  # Member name
+        "Text size in bytes",  # Member comment
+    )
+
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "dsize",  # Member name
+        "Initialised data size",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "bsize",  # Member name
+        "Uninitialised data size ",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "entry",  # Member name
+        "Entry point",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "text_start",  # Member name
+        "Base of Text used for this file",  # Member comment
+    )
+
+    add_member(
+        COFF_OPTIONAL_HEADER_TYPE,  # Structure
+        UnsignedIntegerDataType,  # Member type
+        "data_start",  # Member name
+        "Base of Data used for this file",  # Member comment
+    )
+
+    coff_types.append(COFF_OPTIONAL_HEADER_TYPE)
+    """
     /* sizeof == 40 */
     struct COFFSectionHeader {
         char Name[8];
@@ -180,7 +255,7 @@ def add_coff_types(tm):
 
     add_member(
         COFF_SECTION_HEADER_TYPE,  # Structure
-        ArrayDataType(SignedCharDataType.dataType, 8, 1),  # Member type
+        ArrayDataType(CharDataType.dataType, 8, 1),  # Member type
         "Name",  # Member name
         "Name of the section",  # Member comment
     )
@@ -288,7 +363,7 @@ def add_coff_types(tm):
 
     add_member(
         COFF_SYMBOL_NAME_TYPE,  # Structure
-        ArrayDataType(SignedCharDataType.dataType, 8, 1),  # Member type
+        ArrayDataType(CharDataType.dataType, 8, 1),  # Member type
         "ShortName",  # Member name
         "An array of 8 bytes. This array is padded with nulls on the right if the name is less than 8 bytes long",  # Member comment
     )
@@ -444,8 +519,9 @@ def reloc_section_header(header, section, perform_relocs):
      * perform_relocs - Perform relocations
     """
     section_no = struct.unpack("<H", COFF_DATA[2:4])[0]
+    optional_header_size = struct.unpack("<H", COFF_DATA[0x10:0x12])[0]
 
-    section_ptr = COFF_HEADER_TYPE.getLength()
+    section_ptr = COFF_HEADER_TYPE.getLength() + optional_header_size
     for s in range(section_no):
         section_name = COFF_DATA[section_ptr : section_ptr + 8]
         section_name = "".join([chr(x) for x in section_name if x != 0])
@@ -650,6 +726,9 @@ def main(perform_relocs):
     # Get the number of sections from the header
     section_no = struct.unpack("<H", COFF_DATA[2:4])[0]
 
+    # Get the optional header size
+    optional_header_size = struct.unpack("<H", COFF_DATA[0x10:0x12])[0]
+
     # Create a memory mapping for the COFF file header
     if memory_map.getBlock("header") is not None:
         memory_map.removeBlock(memory_map.getBlock("header"), monitor)
@@ -659,16 +738,19 @@ def main(perform_relocs):
         Address(0x0),  # Mapping address
         coff_filebytes,  # File backing
         0,  # File offset
-        20 + (section_no * 40),  # Size
+        20 + optional_header_size + (section_no * 40),  # Size
         False,  # Overlay mapping
     )
 
     # Apply the COFF header type to the file header
     apply_type(0, COFF_HEADER_TYPE)
 
+    if optional_header_size == 28:
+        apply_type(20, COFF_OPTIONAL_HEADER_TYPE)
+
     # Apply the COFF section header array to the header
     apply_type(
-        COFF_HEADER_TYPE.getLength(),
+        COFF_HEADER_TYPE.getLength() + optional_header_size,
         ArrayDataType(
             COFF_SECTION_HEADER_TYPE, section_no, COFF_SECTION_HEADER_TYPE.getLength()
         ),
@@ -687,6 +769,8 @@ def main(perform_relocs):
     symbol_table_offset = struct.unpack("<I", COFF_DATA[8:0xC])[0]
     symbol_table_count = struct.unpack("<I", COFF_DATA[0xC:0x10])[0]
     symbol_table_size = symbol_table_count * 18
+    if symbol_table_count == 0:
+        return
 
     # Map the symbol table
     if memory_map.getBlock(".symtab") is not None:
